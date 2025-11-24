@@ -1,0 +1,7 @@
+{
+  "python.analysis.extraPaths": ["./"],
+  "python.analysis.exclude": [],
+  "python.analysis.diagnosticSeverityOverrides": {
+    "reportMissingImports": "none"
+  }
+}
