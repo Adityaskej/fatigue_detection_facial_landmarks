@@ -1,4 +1,5 @@
 # fatigue_dashboard2.py
+#this code conisits of head tilt alert
 """
 Streamlit dashboard for internship project:
 Detecting Fatigue from Facial Landmarks — multi-page app.
@@ -734,4 +735,5 @@ elif choice == "Driver Drowsy Alert Mechanism":
 
 
 # ------------------- END OF FILE -------------------
+
 
