@@ -1,4 +1,5 @@
 # fatigue_dashboard.py
+#main.py
 """
 Streamlit dashboard for internship project:
 Detecting Fatigue from Facial Landmarks — multi-page app.
