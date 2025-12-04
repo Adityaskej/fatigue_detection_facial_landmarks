@@ -1,13 +1,9 @@
-Flask
-opencv-python
+streamlit
+opencv-python-headless
+tensorflow
+mediapipe
 numpy
-scipy
 pandas
 scikit-learn
-joblib
-tensorflow       # only if you use a CNN model
-mediapipe        # if used in any part of detection
-# dlib            # if you use dlib landmarks
-Pillow
-requests
-streamlit        # remove if you're not using the Streamlit app
+pillow
+matplotlib
