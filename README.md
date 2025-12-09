@@ -51,6 +51,8 @@ text
 cd fatigue
 cd fatigueapi
 streamlit run fatigue_dashboard1.py
+
+
 for optional code(with head tilt)
 same folder use the same step only change 
 streamlit run fatigue_dashboard2.py
