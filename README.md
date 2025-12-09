@@ -56,3 +56,20 @@ streamlit run fatigue_dashboard1.py
 for optional code(with head tilt)
 same folder use the same step only change 
 streamlit run fatigue_dashboard2.py
+
+
+
+### 5. Run As Docker 
+docker build -t fatigue-detection .
+This creates an image named fatigue-detection from your Dockerfile in the current folder.
+
+Run command
+After a successful build, run the container:
+
+bash
+docker run -p 8501:8501 fatigue-detection
+Then open:
+
+text
+http://localhost:8501
+
