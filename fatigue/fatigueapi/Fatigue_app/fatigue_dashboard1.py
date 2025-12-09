@@ -1,5 +1,6 @@
 # fatigue_dashboard.py
 #main.py
+#Docker file for running in docker 
 """
 Streamlit dashboard for internship project:
 Detecting Fatigue from Facial Landmarks — multi-page app.
