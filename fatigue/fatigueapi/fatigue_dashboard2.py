@@ -175,8 +175,8 @@ def estimate_head_pose(landmarks, img_shape):
 RF_MODEL_PATH = "models/rf_pipeline.pkl"
 CNN_MODEL_PATH = "models/cnn_model.h5"
 # Note: Keeping the user's explicit absolute paths for these models as they seem required.
-EYE_BLINK_MODEL_PATH = r"C:\Users\aditya s\Downloads\Fatigue detection\fatigue\fatigue\fatigueapi\models\eye_blink_model.pkl"
-YAWN_MODEL_PATH = r"C:\Users\aditya s\Downloads\Fatigue detection\fatigue\fatigue\fatigueapi\models\yawn_model.pkl"
+EYE_BLINK_MODEL_PATH = "models/eye_blink_model.pkl"
+YAWN_MODEL_PATH = "models/yawn_model.pkl"
 # --- End Define Model Paths ---
 
 
@@ -736,6 +736,7 @@ elif choice == "Driver Drowsy Alert Mechanism":
 
 
 # ------------------- END OF FILE -------------------
+
 
 
 
