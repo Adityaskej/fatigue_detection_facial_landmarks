@@ -268,9 +268,9 @@ yawn_model = load_yawn_model()
 if choice == "Real-time Webcam Detection (Continuous)":
     st.title("📹 Real-time Webcam Detection (Continuous)")
     st.markdown(
-        "This demo runs a live webcam feed, processing each frame to detect fatigue using the loaded models (RF, SVM-EAR, SVM-MAR)."
+        "This demo runs a live webcam feed, processing each frame to detect fatigue using EAR (eye), MAR (mouth), and head tilt analysis."
     )
-    st.info("Runs best locally. Ensure your eye_blink_model.pkl and yawn_model.pkl paths are correct.")
+    st.info("Ensure eye_blink_model.pkl, yawn_model.pkl, and alarm.wav are correctly located in your working directory.")
 
     import threading, os, time, cv2, numpy as np
     from playsound import playsound
@@ -282,6 +282,7 @@ if choice == "Real-time Webcam Detection (Continuous)":
     EVENTS_FILE = os.path.join(BASE_DIR, "drowsy_events.csv")
 
     def play_alarm_sound(path):
+        """Play alarm sound safely in a separate thread."""
         global ALARM_ACTIVE_FLAG
         if ALARM_ACTIVE_FLAG:
             return
@@ -294,10 +295,12 @@ if choice == "Real-time Webcam Detection (Continuous)":
         ALARM_ACTIVE_FLAG = False
 
     def play_alarm_non_blocking(path):
+        """Play alarm only if not already active."""
         global ALARM_ACTIVE_FLAG
         if not ALARM_ACTIVE_FLAG:
             threading.Thread(target=play_alarm_sound, args=(path,), daemon=True).start()
 
+    # --- Event logging for dashboard ---
     def log_event(event_type, extra=None):
         import pandas as pd
         now = pd.Timestamp.now().isoformat()
@@ -307,6 +310,15 @@ if choice == "Real-time Webcam Detection (Continuous)":
         df = pd.DataFrame([entry])
         file_exists = os.path.exists(EVENTS_FILE)
         df.to_csv(EVENTS_FILE, mode='a', header=not file_exists, index=False)
+
+    # user behaviour trends dashboard
+    import pandas as pd
+    if os.path.exists(EVENTS_FILE):
+        st.subheader("User Behaviour Trends (Past Days/Months)")
+        df_evt = pd.read_csv(EVENTS_FILE, parse_dates=["timestamp"], on_bad_lines="skip")
+        df_evt["day"] = pd.to_datetime(df_evt["timestamp"]).dt.date
+        daily = df_evt.groupby(["day", "event"]).size().unstack(fill_value=0)
+        st.bar_chart(daily)
 
     # --- Streamlit control buttons ---
     if "run_webcam" not in st.session_state:
@@ -321,8 +333,20 @@ if choice == "Real-time Webcam Detection (Continuous)":
             st.session_state.run_webcam = False
 
     # --- Webcam processing loop ---
+    idx = 0
+    for index in range(5):  # Check indices 0 through 4
+        cap = cv2.VideoCapture(index)
+        if cap.isOpened():
+            idx = index
+            cap.release()
+            break
+    else:
+        print(f"No camera at index {idx}")
+
     if st.session_state.run_webcam:
         cap = cv2.VideoCapture(0)
+        if not cap.isOpened():
+            cap = cv2.VideoCapture(1)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
         if not cap.isOpened():
@@ -334,89 +358,85 @@ if choice == "Real-time Webcam Detection (Continuous)":
 
             consecutive_eye_closed = 0
             consecutive_yawn = 0
-            tilt_start_time = None  # For head tilt timer
+            consecutive_tilt = 0  # NEW: head-tilt counter
 
             try:
                 while st.session_state.run_webcam and cap.isOpened():
                     ret, frame = cap.read()
                     if not ret:
-                        st.warning("⚠️ Frame capture failed.")
+                        st.warning("⚠ Frame capture failed.")
                         break
 
                     frame = cv2.flip(frame, 1)
                     h, w = frame.shape[:2]
                     color_default = (255, 255, 255)
+                    fatigue_pct_eye = 0
+                    fatigue_pct_yawn = 0
+                    fatigue_pct_tilt = 0      # NEW: head-tilt fatigue %
+                    status_text_eye = ""
+                    status_text_yawn = ""
+                    status_text_tilt = ""      # NEW: head-tilt status text
 
                     lms_all = get_landmarks_from_image(frame)
                     if lms_all:
                         lm = lms_all[0].landmark
-
                         ear = (
                             eye_aspect_ratio_landmarks(lm, LEFT_EYE_IDX, w, h)
                             + eye_aspect_ratio_landmarks(lm, RIGHT_EYE_IDX, w, h)
                         ) / 2.0
-                        mar = mouth_aspect_ratio_landmarks(lm, OUTER_MOUTH_IDX, INNER_MOUTH_IDX, w, h)
-                        pitch, yaw_angle, roll = estimate_head_pose(lm, frame.shape)
-
-                        if eye_blink_model:
-                            try:
-                                ear_pred = eye_blink_model.predict(np.array([ear]).reshape(1, -1))[0]
-                                ear_label = "CLOSED" if ear_pred == 1 else "OPEN"
-                                color_ear = (0, 0, 255) if ear_pred == 1 else (0, 255, 0)
-                                cv2.circle(frame, (w - 30, 30), 10, color_ear, -1)
-                            except Exception:
-                                ear_label = "ERR"
-
-                        if yawn_model:
-                            try:
-                                mar_pred = yawn_model.predict(np.array([mar]).reshape(1, -1))[0]
-                                yawn_label = "YAWN" if mar_pred == 1 else "NO YAWN"
-                                color_mar = (0, 0, 255) if mar_pred == 1 else (0, 255, 0)
-                                cv2.circle(frame, (w - 30, 60), 10, color_mar, -1)
-                            except Exception:
-                                yawn_label = "ERR"
-
-                        # Head tilt detection: considered drowsy if head tilted down (>20 pitch) or sideways (>20 yaw or roll)
-                        drowsy_tilt = (
-                            pitch is not None
-                            and (pitch > 20 or abs(yaw_angle) > 20 or abs(roll) > 20)
+                        mar = mouth_aspect_ratio_landmarks(
+                            lm, OUTER_MOUTH_IDX, INNER_MOUTH_IDX, w, h
                         )
+                        pitch, yaw, roll = estimate_head_pose(lm, frame.shape)
 
-                        # Head tilt timer logic
-                        if drowsy_tilt:
-                            if tilt_start_time is None:
-                                tilt_start_time = time.time()
-                            elapsed_tilt = time.time() - tilt_start_time
-                        else:
-                            tilt_start_time = None
-                            elapsed_tilt = 0
-                        tilt_sec = elapsed_tilt
+                        # --- Predictions ---
+                        eye_pred = int(
+                            eye_blink_model.predict(np.array([ear]).reshape(1, -1))[0]
+                        )
+                        mar_pred = int(
+                            yawn_model.predict(np.array([mar]).reshape(1, -1))[0]
+                        )
+                        ear_label = "OPEN" if eye_pred == 1 else "CLOSED"
+                        yawn_label = "YAWN" if mar_pred == 1 else "NO YAWN"
 
+                        # --- Log events for dashboard ---
+                        log_event("EYE_" + ear_label)
+
+                        # --- Head tilt detection (down or strong sideways) ---
+                        head_tilt = (
+                            pitch is not None
+                            and (pitch > 20 or abs(yaw) > 20 or abs(roll) > 20)
+                        )
                         eye_closed = ear_label == "CLOSED"
-                        yawn_detected = (yawn_label == "YAWN")
 
-                        # Timers for blink and yawn
+                        # Eye closed counter
                         if eye_closed:
                             consecutive_eye_closed += 1
                         else:
                             consecutive_eye_closed = 0
-                        eye_closed_sec = consecutive_eye_closed / FRAME_RATE
 
+                        # Yawn counter (model + MAR threshold)
+                        yawn_detected = (mar_pred == 1 and mar > 0.35)
                         if yawn_detected:
                             consecutive_yawn += 1
-                        else:
-                            consecutive_yawn = 0
-                        yawn_sec = consecutive_yawn / FRAME_RATE
-
-                        # Log events for dashboard
-                        log_event("EYE_" + ear_label)
-                        if yawn_detected:
-                            if yawn_sec >= 3:
+                            if consecutive_yawn / FRAME_RATE >= 3:
                                 log_event("YAWN_ALARM")
                             else:
                                 log_event("YAWN_WARNING")
+                        else:
+                            consecutive_yawn = 0
 
-                        # Eye fatigue logic alert threshold 3 sec
+                        # Head tilt counter
+                        if head_tilt:
+                            consecutive_tilt += 1
+                        else:
+                            consecutive_tilt = 0
+
+                        eye_closed_sec = consecutive_eye_closed / FRAME_RATE
+                        yawn_sec = consecutive_yawn / FRAME_RATE
+                        tilt_sec = consecutive_tilt / FRAME_RATE  # NEW timer
+
+                        # --- Eye-blink fatigue logic ---
                         if eye_closed_sec >= 3:
                             fatigue_pct_eye = 100
                             status_text_eye = "🚨 FATIGUE DETECTED – TAKE A BREAK!"
@@ -431,13 +451,13 @@ if choice == "Real-time Webcam Detection (Continuous)":
                             status_text_eye = "STATUS: NORMAL (ATTENTIVE)"
                             color_status_eye = (0, 255, 0)
 
-                        # Yawn alert threshold 3 sec
-                        if yawn_sec >= 3:
+                        # --- Yawn logic ---
+                        if yawn_detected and yawn_sec >= 3:
                             fatigue_pct_yawn = 100
-                            status_text_yawn = "⚠️ YAWN ALERT — TAKE A BREAK!"
+                            status_text_yawn = "⚠ YAWN ALERT — TAKE A BREAK!"
                             color_status_yawn = (0, 0, 255)
                             play_alarm_non_blocking(ALARM_PATH)
-                        elif 0 < yawn_sec < 3:
+                        elif yawn_detected and 0 < yawn_sec < 3:
                             fatigue_pct_yawn = 50
                             status_text_yawn = "YAWN DETECTED! WARNING"
                             color_status_yawn = (0, 165, 255)
@@ -446,54 +466,185 @@ if choice == "Real-time Webcam Detection (Continuous)":
                             status_text_yawn = "NO YAWN"
                             color_status_yawn = (0, 255, 0)
 
-                        # Head tilt fatigue logic
+                        # --- Head tilt fatigue logic (NEW) ---
                         if tilt_sec >= 3:
+                            fatigue_pct_tilt = 100
+                            status_text_tilt = "⚠ HEAD TILT ALERT — KEEP YOUR HEAD UP!"
                             color_status_tilt = (0, 0, 255)
-                            tilt_status = "🚨 TILT ALERT: Head tilted >3s"
                             play_alarm_non_blocking(ALARM_PATH)
+                            log_event("TILT_ALARM")
                         elif 0 < tilt_sec < 3:
+                            fatigue_pct_tilt = 50
+                            status_text_tilt = "HEAD TILT WARNING"
                             color_status_tilt = (0, 165, 255)
-                            tilt_status = "TILT WARNING! Keep head up"
+                            log_event("TILT_WARNING")
                         else:
+                            fatigue_pct_tilt = 0
+                            status_text_tilt = "NO TILT"
                             color_status_tilt = (0, 255, 0)
-                            tilt_status = "NO TILT"
 
-                        # Display timers and alert overlays
-                        cv2.putText(frame, f"Eye closed timer: {eye_closed_sec:.1f}s", (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color_default, 2)
-                        cv2.putText(frame, f"Yawn timer: {yawn_sec:.1f}s", (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color_default, 2)
-                        cv2.putText(frame, f"Tilt timer: {tilt_sec:.1f}s", (10, 180), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color_status_tilt, 2)
+                        # --- Timers text ---
+                        cv2.putText(
+                            frame,
+                            f"Eye closed timer: {eye_closed_sec:.1f}s",
+                            (10, 200),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.7,
+                            color_default,
+                            2,
+                        )
+                        cv2.putText(
+                            frame,
+                            f"Yawn timer: {yawn_sec:.1f}s",
+                            (10, 230),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.7,
+                            color_default,
+                            2,
+                        )
+                        cv2.putText(
+                            frame,
+                            f"Tilt timer: {tilt_sec:.1f}s",  # NEW timer display
+                            (10, 260),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.7,
+                            color_default,
+                            2,
+                        )
 
-                        if eye_closed_sec >= 3:
-                            cv2.putText(frame, "🚨 BLINK ALERT: Eyes closed >3s", (10, 330), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                        if yawn_sec >= 3:
-                            cv2.putText(frame, "🚨 YAWN ALERT: Yawn >3s", (10, 360), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                        if tilt_sec >= 3:
-                            cv2.putText(frame, "🚨 TILT ALERT: Head tilted >3s", (10, 390), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                        # --- Fatigue overlays ---
+                        cv2.putText(
+                            frame,
+                            f"STATUS EYEBLINK: {ear_label}",
+                            (10, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.7,
+                            color_default,
+                            2,
+                        )
+                        cv2.putText(
+                            frame,
+                            f"EAR: {ear:.3f}",
+                            (10, 60),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.7,
+                            color_default,
+                            2,
+                        )
+                        cv2.putText(
+                            frame,
+                            f"MAR: {mar:.3f} ({yawn_label})",
+                            (10, 90),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.7,
+                            color_default,
+                            2,
+                        )
+                        cv2.putText(
+                            frame,
+                            f"Fatigue (Eye): {fatigue_pct_eye}%",
+                            (10, 120),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.7,
+                            (0, 0, 255) if fatigue_pct_eye >= 60 else (0, 255, 0),
+                            2,
+                        )
+                        cv2.putText(
+                            frame,
+                            f"Fatigue (Yawn): {fatigue_pct_yawn}%",
+                            (10, 150),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.7,
+                            (0, 0, 255) if fatigue_pct_yawn >= 60 else (0, 255, 0),
+                            2,
+                        )
+                        cv2.putText(
+                            frame,
+                            f"Fatigue (Tilt): {fatigue_pct_tilt}%",  # NEW %
+                            (10, 180),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.7,
+                            (0, 0, 255) if fatigue_pct_tilt >= 60 else (0, 255, 0),
+                            2,
+                        )
 
-                        # Original overlays unchanged
-                        cv2.putText(frame, f"STATUS EYEBLINK: {ear_label}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color_default, 2)
-                        cv2.putText(frame, f"EAR: {ear:.3f}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color_default, 2)
-                        cv2.putText(frame, f"MAR: {mar:.3f} ({yawn_label})", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color_default, 2)
-                        cv2.putText(frame, f"Fatigue (Eye): {fatigue_pct_eye}%", (10, 210), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255) if fatigue_pct_eye >= 60 else (0, 255, 0), 2)
-                        cv2.putText(frame, f"Fatigue (Yawn): {fatigue_pct_yawn}%", (10, 240), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255) if fatigue_pct_yawn >= 60 else (0, 255, 0), 2)
+                        # --- Status overlays ---
+                        cv2.putText(
+                            frame,
+                            status_text_eye,
+                            (10, 300),
+                            cv2.FONT_HERSHEY_DUPLEX,
+                            0.8,
+                            color_status_eye,
+                            2,
+                        )
+                        cv2.putText(
+                            frame,
+                            status_text_yawn,
+                            (10, 330),
+                            cv2.FONT_HERSHEY_DUPLEX,
+                            0.8,
+                            color_status_yawn,
+                            2,
+                        )
+                        cv2.putText(
+                            frame,
+                            status_text_tilt,  # NEW tilt status line
+                            (10, 360),
+                            cv2.FONT_HERSHEY_DUPLEX,
+                            0.8,
+                            color_status_tilt,
+                            2,
+                        )
 
+                        # --- Red overlay when any fatigue is 100% ---
+                        if (
+                            fatigue_pct_eye == 100
+                            or fatigue_pct_yawn == 100
+                            or fatigue_pct_tilt == 100
+                        ):
+                            overlay = frame.copy()
+                            cv2.rectangle(overlay, (0, 0), (w, 100), (0, 0, 255), -1)
+                            cv2.addWeighted(overlay, 0.4, frame, 0.6, 0, frame)
+                            cv2.putText(
+                                frame,
+                                "🚨 FATIGUE ALERT 🚨",
+                                (w // 2 - 200, 60),
+                                cv2.FONT_HERSHEY_SIMPLEX,
+                                1.2,
+                                (255, 255, 255),
+                                3,
+                            )
+
+                    # --- Stream frame to Streamlit ---
                     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    frame_placeholder.image(frame_rgb, channels="RGB", use_container_width=True)
-
-                    time.sleep(0.03)  # ~30 FPS
+                    frame_placeholder.image(
+                        frame_rgb, channels="RGB", use_container_width=True
+                    )
+                    time.sleep(0.03)
 
             finally:
                 cap.release()
                 st.session_state.run_webcam = False
                 st.info("✅ Webcam stopped.")
 
-                import pandas as pd
-                if os.path.exists(EVENTS_FILE):
-                    st.subheader("User Behaviour Trends (Past Days/Months)")
-                    df_evt = pd.read_csv(EVENTS_FILE, parse_dates=["timestamp"], on_bad_lines="skip")
-                    df_evt['day'] = pd.to_datetime(df_evt["timestamp"]).dt.date
-                    daily = df_evt.groupby(['day', 'event']).size().unstack(fill_value=0)
-                    st.bar_chart(daily)
+        # quick model sanity check (optional)
+        model = joblib.load(
+            r"C:\Users\User\Downloads\fatigue_detection\fatigue\fatigueapi\models\eye_blink_model.pkl"
+        )
+        test_ears = np.array([[0.15], [0.25], [0.35]])
+        preds = model.predict(test_ears)
+        for ear, pred in zip(test_ears.flatten(), preds):
+            print(f"EAR={ear:.2f} -> Model Prediction={pred}")
+
+    # import pandas as pd
+    # if os.path.exists(EVENTS_FILE):
+    #     st.subheader("User Behaviour Trends (Past Days/Months)")
+    #     df_evt = pd.read_csv(EVENTS_FILE, parse_dates=["timestamp"], on_bad_lines="skip")
+    #     df_evt["day"] = pd.to_datetime(df_evt["timestamp"]).dt.date
+    #     daily = df_evt.groupby(["day", "event"]).size().unstack(fill_value=0)
+    #     st.bar_chart(daily)
+
 
 
 
@@ -736,7 +887,3 @@ elif choice == "Driver Drowsy Alert Mechanism":
 
 
 # ------------------- END OF FILE -------------------
-
-
-
-
